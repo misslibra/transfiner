@@ -20,9 +20,9 @@ except ImportError:
     # OpenCV is an optional dependency at the moment
     pass
 
+VISUALIZE_POLYGON = False
 
 logger = logging.getLogger(__name__)
-
 
 def _get_cityscapes_files(image_dir, gt_dir):
     files = []
@@ -34,15 +34,12 @@ def _get_cityscapes_files(image_dir, gt_dir):
         city_gt_dir = os.path.join(gt_dir, city)
         for basename in PathManager.ls(city_img_dir):
             image_file = os.path.join(city_img_dir, basename)
-
-            suffix = "leftImg8bit.png"
+            suffix = "leftImg8bit.png" 
             assert basename.endswith(suffix), basename
             basename = basename[: -len(suffix)]
-
             instance_file = os.path.join(city_gt_dir, basename + "gtFine_instanceIds.png")
             label_file = os.path.join(city_gt_dir, basename + "gtFine_labelIds.png")
             json_file = os.path.join(city_gt_dir, basename + "gtFine_polygons.json")
-
             files.append((image_file, instance_file, label_file, json_file))
     assert len(files), "No images found in {}".format(image_dir)
     for f in files[0]:
@@ -50,11 +47,31 @@ def _get_cityscapes_files(image_dir, gt_dir):
     return files
 
 
-def load_cityscapes_instances(image_dir, gt_dir, from_json=True, to_polygons=True):
+def _get_cityscapes_files_from_filelist(image_dir, gt_dir):
+    files = []
+    with open(image_dir,'r') as f:
+        images = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(gt_dir,'r') as f:
+        labels = [line.rstrip().split(' ') for line in f.readlines()]
+    for idx, image in enumerate(images):
+        label_file = labels[idx][0]
+        if "_gtFine_labelTrainIds.png" in label_file:
+            label_file = label_file.replace("_gtFine_labelTrainIds.png", "_gtFine_labelIds.png")
+        instance_file = label_file.replace("_gtFine_labelIds.png", "_gtFine_instanceIds.png")
+        json_file = label_file.replace("_gtFine_labelIds.png", "_gtFine_polygons.json")
+        files.append((image[0], instance_file, label_file, json_file))
+    
+    assert len(files), "No images found in {}".format(image_dir)
+    for f in files[0]:
+        assert PathManager.isfile(f), f
+    return files
+
+def load_cityscapes_instances(image_dir, gt_dir, category='full_class', from_file_list=False, from_json=True, to_polygons=True):
     """
     Args:
         image_dir (str): path to the raw dataset. e.g., "~/cityscapes/leftImg8bit/train".
         gt_dir (str): path to the raw annotations. e.g., "~/cityscapes/gtFine/train".
+        category: cindy: full_class/ vehicle / human_cycle
         from_json (bool): whether to read annotations from the raw json file or the png files.
         to_polygons (bool): whether to represent the segmentation as polygons
             (COCO's format) instead of masks (cityscapes's format).
@@ -68,32 +85,54 @@ def load_cityscapes_instances(image_dir, gt_dir, from_json=True, to_polygons=Tru
             "Cityscapes's json annotations are in polygon format. "
             "Converting to mask format is not supported now."
         )
-    files = _get_cityscapes_files(image_dir, gt_dir)
+    if from_file_list:
+        files = _get_cityscapes_files_from_filelist(image_dir, gt_dir)
+    else:
+        files = _get_cityscapes_files(image_dir, gt_dir) # original
 
     logger.info("Preprocessing cityscapes annotations ...")
     # This is still not fast: all workers will execute duplicate works and will
     # take up to 10m on a 8GPU server.
     pool = mp.Pool(processes=max(mp.cpu_count() // get_world_size() // 2, 4))
 
-    from_json = False
     ret = pool.map(
-        functools.partial(_cityscapes_files_to_dict, from_json=from_json, to_polygons=to_polygons),
+        functools.partial(_cityscapes_files_to_dict, category=category, from_json=from_json, to_polygons=to_polygons),
         files,
     )
-    logger.info("Loaded {} images from {}".format(len(ret), image_dir))
+    # use in debug
+    # ret = []
+    # for i in range (len(files)):
+    #     ret_1 = _cityscapes_files_to_dict(files[i], category=category, from_json=from_json, to_polygons=to_polygons)
+    #     ret.append(ret_1)
 
+    logger.info("Loaded {} images from {}".format(len(ret), image_dir))
     # Map cityscape ids to contiguous ids
     from cityscapesscripts.helpers.labels import labels
 
     labels = [l for l in labels if l.hasInstances and not l.ignoreInEval]
+    ########  cindy
+    # if '/val/' not in ret[0]['file_name']:
+    if category == 'vehicle':
+        del labels[0:2]
+        del labels[-2:]
+    elif category == 'human_cycle':
+        del labels[2:6]
+    elif category == 'human_cycle_vehicle':
+        # del labels[2:6]
+        pass
+
     dataset_id_to_contiguous_id = {l.id: idx for idx, l in enumerate(labels)}
     for dict_per_image in ret:
         for anno in dict_per_image["annotations"]:
-            anno["category_id"] = dataset_id_to_contiguous_id[anno["category_id"]]
+            try:
+                anno["category_id"] = dataset_id_to_contiguous_id[anno["category_id"]]
+            except:
+                dict_per_image["annotations"].remove(anno)#  cindy 
+                continue
     return ret
 
 
-def load_cityscapes_semantic(image_dir, gt_dir):
+def load_cityscapes_semantic(image_dir, gt_dir, from_file_list=False):
     """
     Args:
         image_dir (str): path to the raw dataset. e.g., "~/cityscapes/leftImg8bit/train".
@@ -106,19 +145,41 @@ def load_cityscapes_semantic(image_dir, gt_dir):
     ret = []
     # gt_dir is small and contain many small files. make sense to fetch to local first
     gt_dir = PathManager.get_local_path(gt_dir)
-    for image_file, _, label_file, json_file in _get_cityscapes_files(image_dir, gt_dir):
-        label_file = label_file.replace("labelIds", "labelTrainIds")
 
-        with PathManager.open(json_file, "r") as f:
-            jsonobj = json.load(f)
-        ret.append(
-            {
-                "file_name": image_file,
-                "sem_seg_file_name": label_file,
-                "height": jsonobj["imgHeight"],
-                "width": jsonobj["imgWidth"],
-            }
-        )
+    if from_file_list:
+        files = _get_cityscapes_files_from_filelist(image_dir, gt_dir)
+    else:
+        files = _get_cityscapes_files(image_dir, gt_dir)
+    for image_file, _, label_file, json_file in files:
+    # for image_file, _, label_file, json_file in _get_cityscapes_files(image_dir, gt_dir): # origin
+        if 'ynscapes' in image_file:
+            # print('---')
+            # img = cv2.imread(image_file)
+            # imgHeight = img.shape[0]
+            # imgWidth = img.shape[1]
+            imgHeight = 720
+            imgWidth = 1440
+            ret.append(
+                {
+                    "file_name": image_file,
+                    "sem_seg_file_name": label_file,
+                    "height": imgHeight,
+                    "width": imgWidth,
+                }
+            )
+        else:
+            label_file = label_file.replace("labelIds", "labelTrainIds")
+            with PathManager.open(json_file, "r") as f:
+                jsonobj = json.load(f)
+            ret.append(
+                {
+                    "file_name": image_file,
+                    "sem_seg_file_name": label_file,
+                    "height": jsonobj["imgHeight"],
+                    "width": jsonobj["imgWidth"],
+                }
+            )
+
     assert len(ret), f"No images found in {image_dir}!"
     assert PathManager.isfile(
         ret[0]["sem_seg_file_name"]
@@ -126,7 +187,9 @@ def load_cityscapes_semantic(image_dir, gt_dir):
     return ret
 
 
-def _cityscapes_files_to_dict(files, from_json, to_polygons):
+def _cityscapes_files_to_dict(files, category='full_class', from_json=True, to_polygons=True):
+# def _cityscapes_files_to_dict(files):
+
     """
     Parse cityscapes annotation files to a instance segmentation dataset dict.
 
@@ -162,14 +225,27 @@ def _cityscapes_files_to_dict(files, from_json, to_polygons):
 
         # CityscapesScripts draw the polygons in sequential order
         # and each polygon *overwrites* existing ones. See
-        # (https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/preparation/json2instanceImg.py) # noqa
+        # (https/home/yguo/Documents/other/detectron2_maskRCNN/datasets/synscapes/img://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/preparation/json2instanceImg.py) # noqa
         # We use reverse order, and each polygon *avoids* early ones.
         # This will resolve the ploygon overlaps in the same way as CityscapesScripts.
+        if VISUALIZE_POLYGON:
+            img_clone = cv2.imread(image_file) ####  cindy add, visulize polygon
+
         for obj in jsonobj["objects"][::-1]:
             if "deleted" in obj:  # cityscapes data format specific
                 continue
             label_name = obj["label"]
 
+            if category == 'vehicle': ## cindy 
+                if label_name not in ['car', 'truck', 'bus', 'train']:
+                    continue
+            elif category == 'human_cycle':
+                if label_name not in ['person', 'rider', 'motorcycle', 'bicycle']:
+                    continue
+            elif category == 'human_cycle_vehicle':
+                if label_name not in ['person', 'rider', 'motorcycle', 'bicycle', 'car', 'truck', 'bus', 'train']:
+                    continue
+            
             try:
                 label = name2label[label_name]
             except KeyError:
@@ -177,54 +253,86 @@ def _cityscapes_files_to_dict(files, from_json, to_polygons):
                     label = name2label[label_name[: -len("group")]]
                 else:
                     raise
-            if label.id < 0:  # cityscapes data format
+            if label.id < 0:  # cityscapes data format # cindy add , remove bike and motor
                 continue
-
-            # Cityscapes's raw annotations uses integer coordinates
-            # Therefore +0.5 here
-            poly_coord = np.asarray(obj["polygon"], dtype="f4") + 0.5
-            # CityscapesScript uses PIL.ImageDraw.polygon to rasterize
-            # polygons for evaluation. This function operates in integer space
-            # and draws each pixel whose center falls into the polygon.
-            # Therefore it draws a polygon which is 0.5 "fatter" in expectation.
-            # We therefore dilate the input polygon by 0.5 as our input.
-            poly = Polygon(poly_coord).buffer(0.5, resolution=4)
-
-            if not label.hasInstances or label.ignoreInEval:
-                # even if we won't store the polygon it still contributes to overlaps resolution
-                polygons_union = polygons_union.union(poly)
-                continue
-
-            # Take non-overlapping part of the polygon
-            poly_wo_overlaps = poly.difference(polygons_union)
-            if poly_wo_overlaps.is_empty:
-                continue
-            polygons_union = polygons_union.union(poly)
 
             anno = {}
             anno["iscrowd"] = label_name.endswith("group")
-            anno["category_id"] = label.id
+            anno["category_id"] = label.id   
 
-            if isinstance(poly_wo_overlaps, Polygon):
-                poly_list = [poly_wo_overlaps]
-            elif isinstance(poly_wo_overlaps, MultiPolygon):
-                poly_list = poly_wo_overlaps.geoms
-            else:
-                raise NotImplementedError("Unknown geometric structure {}".format(poly_wo_overlaps))
 
-            poly_coord = []
-            for poly_el in poly_list:
-                # COCO API can work only with exterior boundaries now, hence we store only them.
-                # TODO: store both exterior and interior boundaries once other parts of the
-                # codebase support holes in polygons.
-                poly_coord.append(list(chain(*poly_el.exterior.coords)))
-            anno["segmentation"] = poly_coord
-            (xmin, ymin, xmax, ymax) = poly_wo_overlaps.bounds
+            if "polygon" in obj: # cindy, origin logic for cityscapes
+                # Cityscapes's raw annotations uses integer coordinates
+                # Therefore +0.5 here
+                if (len(obj["polygon"])) < 6: # cindy add, for some case, points less than 4
+                    continue
+                poly_coord = np.asarray(obj["polygon"], dtype="f4") + 0.5
+                # CityscapesScript uses PIL.ImageDraw.polygon to rasterize
+                # polygons for evaluation. This function operates in integer space
+                # and draws each pixel whose center falls into the polygon.
+                # Therefore it draws a polygon which is 0.5 "fatter" in expectation.
+                # We therefore dilate the input polygon by 0.5 as our input.
+                poly = Polygon(poly_coord).buffer(0.5, resolution=4) # origin for cityscapes
+                if not label.hasInstances or label.ignoreInEval:
+                    # even if we won't store the polygon it still contributes to overlaps resolution
+                    polygons_union = polygons_union.union(poly)
+                    continue
+                # Take non-overlapping part of the polygon
+                poly_wo_overlaps = poly.difference(polygons_union)
+                if poly_wo_overlaps.is_empty:
+                    continue
+                polygons_union = polygons_union.union(poly)
+                if isinstance(poly_wo_overlaps, Polygon):
+                    poly_list = [poly_wo_overlaps]
+                elif isinstance(poly_wo_overlaps, MultiPolygon):
+                    poly_list = poly_wo_overlaps.geoms
+                else:
+                    raise NotImplementedError("Unknown geometric structure {}".format(poly_wo_overlaps))
+                poly_coord = []
+                for poly_el in poly_list:# TODO ^^^^^^^^^^^^^^^^^^^^^ 直接输入多个polygon
+                    # COCO API can work only with exterior boundaries now, hence we store only them.
+                    # TODO: store both exterior and interior boundaries once other parts of the
+                    # codebase support holes in polygons.
+                    poly_coord.append(list(chain(*poly_el.exterior.coords)))
+                anno["segmentation"] = poly_coord
+                (xmin, ymin, xmax, ymax) = poly_wo_overlaps.bounds
 
-            anno["bbox"] = (xmin, ymin, xmax, ymax)
-            anno["bbox_mode"] = BoxMode.XYXY_ABS
+                anno["bbox"] = (xmin, ymin, xmax, ymax)
+                anno["bbox_mode"] = BoxMode.XYXY_ABS
+                annos.append(anno)
+            elif "segmentation" in obj: # cindy add,  use coco logic for synscapes
+                segm = obj.get("segmentation", None)
+                if len(segm) == 0:
+                    continue  # ignore this instance
 
-            annos.append(anno)
+                # filter out invalid polygons (< 3 points)
+                poly_coord = []
+                
+                for poly in segm:
+                    # if len(poly) % 2 == 0 and len(poly) >= 6:  # TODO : len(poly) is point number, why 2 times
+                    # print(len(poly))
+                    if len(poly) >= 6:
+                        if len(poly) % 2 != 0:
+                            poly.pop()
+                    
+                        poly_xy = np.flip(np.array(poly), axis=1)
+                        # print(poly_xy.shape)
+                        x, y = poly_xy.shape
+                        poly_xy_reshape = np.reshape(poly_xy, (1, x*y))
+                        # print(poly_xy_reshape.shape)
+                        poly_coord.append((poly_xy_reshape).tolist()[0])
+
+                        if VISUALIZE_POLYGON:
+                            cv2.polylines(img_clone,[poly_xy],True,(255,0,255), 1) ####  cindy add, visulize polygon
+                if len(poly_coord) != 0:
+                    anno["segmentation"] = poly_coord
+                    anno["bbox"] = obj["bbox"]
+                    anno["bbox_mode"] = BoxMode.XYXY_ABS
+                    annos.append(anno)
+        
+        if VISUALIZE_POLYGON:
+            cv2.imwrite('urban_polygon/' + image_file.split('/')[-1].replace('.png', '_polygon.png') , img_clone) ####  cindy add, visulize polygon
+        
     else:
         # See also the official annotation parsing scripts at
         # https://github.com/mcordts/cityscapesScripts/blob/master/cityscapesscripts/evaluation/instances2dict.py  # noqa
