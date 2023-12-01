@@ -112,14 +112,14 @@ def load_cityscapes_instances(image_dir, gt_dir, category='full_class', from_fil
     labels = [l for l in labels if l.hasInstances and not l.ignoreInEval]
     ########  cindy
     # if '/val/' not in ret[0]['file_name']:
-    if category == 'vehicle':
-        del labels[0:2]
-        del labels[-2:]
-    elif category == 'human_cycle':
-        del labels[2:6]
-    elif category == 'human_cycle_vehicle':
-        # del labels[2:6]
-        pass
+    # if category == 'vehicle':
+    #     del labels[0:2]
+    #     del labels[-2:]
+    # elif category == 'human_cycle':
+    #     del labels[2:6]
+    # elif category == 'human_cycle_vehicle':
+    #     # del labels[2:6]
+    #     pass
 
     dataset_id_to_contiguous_id = {l.id: idx for idx, l in enumerate(labels)}
     for dict_per_image in ret:

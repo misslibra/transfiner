@@ -149,13 +149,20 @@ def _apply_exif_orientation(image):
     orientation = exif.get(_EXIF_ORIENT)
 
     method = {
-        2: Image.FLIP_LEFT_RIGHT,
-        3: Image.ROTATE_180,
-        4: Image.FLIP_TOP_BOTTOM,
-        5: Image.TRANSPOSE,
-        6: Image.ROTATE_270,
-        7: Image.TRANSVERSE,
-        8: Image.ROTATE_90,
+        # 2: Image.FLIP_LEFT_RIGHT,
+        # 3: Image.ROTATE_180,
+        # 4: Image.FLIP_TOP_BOTTOM,
+        # 5: Image.TRANSPOSE,
+        # 6: Image.ROTATE_270,
+        # 7: Image.TRANSVERSE,
+        # 8: Image.ROTATE_90,
+        2: Image.Transpose.FLIP_LEFT_RIGHT,
+        3: Image.Transpose.ROTATE_180,
+        4: Image.Transpose.FLIP_TOP_BOTTOM,
+        5: Image.Transpose.TRANSPOSE,
+        6: Image.Transpose.ROTATE_270,
+        7: Image.Transpose.TRANSVERSE,
+        8: Image.Transpose.ROTATE_90,
     }.get(orientation)
 
     if method is not None:
@@ -359,7 +366,7 @@ def transform_keypoint_annotations(keypoints, transforms, image_size, keypoint_h
                 "Keypoint data has {} points, but metadata "
                 "contains {} points!".format(len(keypoints), len(keypoint_hflip_indices))
             )
-        keypoints = keypoints[np.asarray(keypoint_hflip_indices, dtype=np.int32), :]
+        keypoints = keypoints[np.asarray(keypoint_hflip_indices, dtype=int32), :]
 
     # Maintain COCO convention that if visibility == 0 (unlabeled), then x, y = 0
     keypoints[keypoints[:, 2] == 0] = 0
@@ -410,6 +417,8 @@ def annotations_to_instances(annos, image_size, mask_format="polygon"):
             #assert mask_format == "bitmask", mask_format
             masks = []
             for segm in segms:
+                if len(segm) == 0:
+                    continue
                 if isinstance(segm, list):
                     # polygon
                     masks.append(polygons_to_bitmask(segm, *image_size))
@@ -545,7 +554,7 @@ def gen_crop_transform_with_instance(crop_size, image_size, instance):
         instance (dict): an annotation dict of one instance, in Detectron2's
             dataset format.
     """
-    crop_size = np.asarray(crop_size, dtype=np.int32)
+    crop_size = np.asarray(crop_size, dtype=int32)
     bbox = BoxMode.convert(instance["bbox"], instance["bbox_mode"], BoxMode.XYXY_ABS)
     center_yx = (bbox[1] + bbox[3]) * 0.5, (bbox[0] + bbox[2]) * 0.5
     assert (
@@ -555,9 +564,9 @@ def gen_crop_transform_with_instance(crop_size, image_size, instance):
         image_size[0] >= crop_size[0] and image_size[1] >= crop_size[1]
     ), "Crop size is larger than image size!"
 
-    min_yx = np.maximum(np.floor(center_yx).astype(np.int32) - crop_size, 0)
-    max_yx = np.maximum(np.asarray(image_size, dtype=np.int32) - crop_size, 0)
-    max_yx = np.minimum(max_yx, np.ceil(center_yx).astype(np.int32))
+    min_yx = np.maximum(np.floor(center_yx).astype(int32) - crop_size, 0)
+    max_yx = np.maximum(np.asarray(image_size, dtype=int32) - crop_size, 0)
+    max_yx = np.minimum(max_yx, np.ceil(center_yx).astype(int32))
 
     y0 = np.random.randint(min_yx[0], max_yx[0] + 1)
     x0 = np.random.randint(min_yx[1], max_yx[1] + 1)

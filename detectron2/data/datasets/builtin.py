@@ -180,9 +180,23 @@ def register_all_lvis(root):
 
 # ==== Predefined splits for raw cityscapes images ===========
 _RAW_CITYSCAPES_SPLITS = {
-    "cityscapes_fine_{task}_train": ("cityscapes/leftImg8bit/train/", "cityscapes/gtFine/train/"),
-    "cityscapes_fine_{task}_val": ("cityscapes/leftImg8bit/val/", "cityscapes/gtFine/val/"),
-    "cityscapes_fine_{task}_test": ("cityscapes/leftImg8bit/test/", "cityscapes/gtFine/test/"),
+    "urbansyn_fine_{task}_train": ("urbansyn_total_label/img_urbansyn_instance.txt", "urbansyn_total_label/label_urbansyn_instance.txt"),
+    "urbansyn_human_cycle_fine_{task}_train": ("urbansyn_total_label/img_urbansyn_instance.txt", "urbansyn_total_label/label_urbansyn_instance.txt"),
+    "urbansyn_vehicle_fine_{task}_train": ("urbansyn_total_label/img_urbansyn_instance.txt", "urbansyn_total_label/label_urbansyn_instance.txt"),
+
+    "cityscapes_fine_{task}_train": ("cityscapes/leftimage8bit_train.txt", "cityscapes/gtFine_train.txt"),
+    "cityscapes_human_cycle_fine_{task}_train": ("cityscapes/leftimage8bit_train.txt", "cityscapes/gtFine_train.txt"),
+    "cityscapes_vehicle_fine_{task}_train": ("cityscapes/leftimage8bit_train.txt", "cityscapes/gtFine_train.txt"),
+
+    "synscapes_human_cycle_fine_{task}_train": ("synscapes/img/cindy/person_cycle_cityscape_format/img_syn_human_cycle.txt", "synscapes/img/cindy/person_cycle_cityscape_format/label_syn_human_cycle.txt"),
+    "synscapes_vehicle_fine_{task}_train": ("synscapes/img/cindy/vehicle_city_format/img_synscapes_vehicle_instance.txt", "synscapes/img/cindy/vehicle_city_format/label_synscapes_vehicle_instance.txt"),
+
+    # "cityscapes_fine_{task}_train": ("cityscapes/leftImg8bit/train/", "cityscapes/gtFine/train/"),
+    # "cityscapes_fine_{task}_train": ("urbansyn_total_label/img_urbansyn_instance.txt", "urbansyn_total_label/label_urbansyn_instance.txt"),
+    
+    "cityscapes_fine_{task}_val": ("synscapes/img/cindy/val_cityscapes_img.txt", "synscapes/img/cindy/val_cityscapes_label.txt"),
+    "cityscapes_fine_{task}_test":("synscapes/img/cindy/test_cityscapes_img.txt", "synscapes/img/cindy/test_cityscapes_label.txt"),
+
 }
 
 
@@ -192,20 +206,32 @@ def register_all_cityscapes(root):
         image_dir = os.path.join(root, image_dir)
         gt_dir = os.path.join(root, gt_dir)
 
+
         inst_key = key.format(task="instance_seg")
+
+        if 'human_cycle' in inst_key:
+            cate = 'human_cycle'
+        elif 'vehicle' in inst_key:
+            cate = 'vehicle'
+        else:
+            cate = 'human_cycle_vehicle'
+
         DatasetCatalog.register(
             inst_key,
+            # category: cindy: full_class/ vehicle / human_cycle / human_cycle_vehicle
             lambda x=image_dir, y=gt_dir: load_cityscapes_instances(
-                x, y, from_json=True, to_polygons=True
+                x, y,  category=cate, from_file_list=True, from_json=True, to_polygons=True
             ),
         )
+
+        # print(' sampe : ', DatasetCatalog.get('cityscapes_fine_instance_seg_train')[0])
         MetadataCatalog.get(inst_key).set(
-            image_dir=image_dir, gt_dir=gt_dir, evaluator_type="cityscapes_instance", **meta
+            image_dir=image_dir, gt_dir=gt_dir, evaluator_type="cityscapes_instance2sem_seg", **meta #cindy add :cityscapes_instance2sem_seg  , origin : cityscapes_instance
         )
 
         sem_key = key.format(task="sem_seg")
         DatasetCatalog.register(
-            sem_key, lambda x=image_dir, y=gt_dir: load_cityscapes_semantic(x, y)
+            sem_key, lambda x=image_dir, y=gt_dir: load_cityscapes_semantic(x, y, from_file_list=True)
         )
         MetadataCatalog.get(sem_key).set(
             image_dir=image_dir,
